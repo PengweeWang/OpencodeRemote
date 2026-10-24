@@ -216,16 +216,25 @@ class OpencodeService extends ChangeNotifier {
 
   Future<void> disconnect() async {
     final sId = _currentSessionId;
+    _currentSessionId = null;
+    _state = OpencodeState.disconnected;
+    _addLog('disconnect', 'Disconnected by user');
+    notifyListeners();
+
     if (sId != null) {
       try {
-        await _subscription?.cancel();
-        _subscription = null;
         await rust_api.stopOpencodeSession(sessionId: sId);
-      } catch (_) {}
-      _currentSessionId = null;
-      _state = OpencodeState.disconnected;
-      _addLog('disconnect', 'Disconnected by user');
-      notifyListeners();
+      } catch (e) {
+        debugPrint('stopOpencodeSession error: $e');
+      }
+
+      final sub = _subscription;
+      _subscription = null;
+      try {
+        await sub?.cancel().timeout(const Duration(milliseconds: 300));
+      } catch (e) {
+        debugPrint('subscription cancel error: $e');
+      }
     }
   }
 

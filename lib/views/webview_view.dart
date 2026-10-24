@@ -1,6 +1,7 @@
 import 'package:flutter/material.dart';
 import 'package:url_launcher/url_launcher.dart';
 import 'package:webview_flutter/webview_flutter.dart';
+import 'home_view.dart';
 import '../services/opencode_service.dart';
 import '../theme/app_theme.dart';
 
@@ -16,7 +17,6 @@ class _OpencodeWebViewScreenState extends State<OpencodeWebViewScreen> {
   int _loadingProgress = 0;
   bool _isLoading = true;
   String? _loadError;
-  bool _canPop = false;
   bool _isFullScreen = true;
 
   // Floating draggable control button position
@@ -130,10 +130,12 @@ class _OpencodeWebViewScreenState extends State<OpencodeWebViewScreen> {
       // Generate a fresh unconsumed pair link from remote server
       final freshUrl = await service.refreshPairUrl();
       final uri = Uri.parse(freshUrl);
-      if (await canLaunchUrl(uri)) {
-        await launchUrl(uri, mode: LaunchMode.externalApplication);
-      } else {
-        throw Exception('无法调起系统外部浏览器');
+      final launched = await launchUrl(uri, mode: LaunchMode.externalApplication);
+      if (!launched) {
+        final fallbackLaunched = await launchUrl(uri, mode: LaunchMode.platformDefault);
+        if (!fallbackLaunched) {
+          throw Exception('无法调起系统外部浏览器');
+        }
       }
     } catch (e) {
       if (!mounted) return;
@@ -147,13 +149,18 @@ class _OpencodeWebViewScreenState extends State<OpencodeWebViewScreen> {
     }
   }
 
-  Future<void> _disconnectAndExit() async {
-    await OpencodeService().disconnect();
+  void _disconnectAndExit() {
+    // Asynchronously stop session and background listeners
+    OpencodeService().disconnect();
     if (!mounted) return;
-    setState(() {
-      _canPop = true;
-    });
-    Navigator.of(context).pop();
+    final nav = Navigator.of(context);
+    if (nav.canPop()) {
+      nav.popUntil((route) => route.isFirst);
+    } else {
+      nav.pushReplacement(
+        MaterialPageRoute(builder: (_) => const HomeView()),
+      );
+    }
   }
 
   Future<bool> _confirmDisconnectDialog() async {
@@ -483,13 +490,7 @@ class _OpencodeWebViewScreenState extends State<OpencodeWebViewScreen> {
                   ),
                   icon: const Icon(Icons.power_settings_new, size: 20),
                   label: const Text('断开并退出'),
-                  onPressed: () async {
-                    Navigator.pop(sheetCtx);
-                    final shouldExit = await _confirmDisconnectDialog();
-                    if (shouldExit && mounted) {
-                      await _disconnectAndExit();
-                    }
-                  },
+                  onPressed: _disconnectAndExit,
                 ),
               ),
             ],
@@ -509,7 +510,7 @@ class _OpencodeWebViewScreenState extends State<OpencodeWebViewScreen> {
     _fabPosition ??= Offset(screenSize.width - 64, screenSize.height - 130);
 
     return PopScope(
-      canPop: _canPop,
+      canPop: false,
       onPopInvokedWithResult: (didPop, result) async {
         if (didPop) return;
         if (await _controller.canGoBack()) {
@@ -517,7 +518,7 @@ class _OpencodeWebViewScreenState extends State<OpencodeWebViewScreen> {
         } else {
           final shouldExit = await _confirmDisconnectDialog();
           if (shouldExit && mounted) {
-            await _disconnectAndExit();
+            _disconnectAndExit();
           }
         }
       },
@@ -531,7 +532,7 @@ class _OpencodeWebViewScreenState extends State<OpencodeWebViewScreen> {
                   onPressed: () async {
                     final shouldExit = await _confirmDisconnectDialog();
                     if (shouldExit && mounted) {
-                      await _disconnectAndExit();
+                      _disconnectAndExit();
                     }
                   },
                 ),

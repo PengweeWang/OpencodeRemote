@@ -446,14 +446,15 @@ pub async fn start_opencode_session(
 }
 
 pub async fn stop_opencode_session(session_id: &str) -> Result<(), String> {
-    let mut sessions = active_opencode_sessions().write().await;
-    if let Some(handle) = sessions.remove(session_id) {
-        let _ = handle.stop_tx.send(()).await;
+    let handle = {
+        let mut sessions = active_opencode_sessions().write().await;
+        sessions.remove(session_id)
+    };
+    if let Some(handle) = handle {
         handle.is_running.store(false, Ordering::Relaxed);
-        Ok(())
-    } else {
-        Err(format!("Session {} not found or already stopped", session_id))
+        let _ = handle.stop_tx.try_send(());
     }
+    Ok(())
 }
 
 pub async fn refresh_pair_url(session_id: &str) -> Result<String, String> {
