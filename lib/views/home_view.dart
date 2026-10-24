@@ -29,13 +29,14 @@ class _HomeViewState extends State<HomeView> {
           appBar: AppBar(
             title: Row(
               children: [
-                Container(
-                  padding: const EdgeInsets.all(6),
-                  decoration: BoxDecoration(
-                    color: AppTheme.primary.withOpacity(0.2),
-                    borderRadius: BorderRadius.circular(8),
+                ClipRRect(
+                  borderRadius: BorderRadius.circular(8),
+                  child: Image.asset(
+                    'assets/images/logo.png',
+                    width: 32,
+                    height: 32,
+                    fit: BoxFit.cover,
                   ),
-                  child: const Icon(Icons.code, color: AppTheme.primary, size: 20),
                 ),
                 const SizedBox(width: 10),
                 const Text(
