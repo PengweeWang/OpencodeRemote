@@ -16,6 +16,11 @@ class _OpencodeWebViewScreenState extends State<OpencodeWebViewScreen> {
   int _loadingProgress = 0;
   bool _isLoading = true;
   String? _loadError;
+  bool _canPop = false;
+  bool _isFullScreen = true;
+
+  // Floating draggable control button position
+  Offset? _fabPosition;
 
   @override
   void initState() {
@@ -54,7 +59,7 @@ class _OpencodeWebViewScreenState extends State<OpencodeWebViewScreen> {
           onWebResourceError: (WebResourceError error) {
             if (mounted) {
               setState(() {
-                // Ignore benign canceled requests
+                // Ignore benign canceled requests (-999)
                 if (error.errorCode != -999) {
                   _loadError = error.description;
                 }
@@ -69,6 +74,8 @@ class _OpencodeWebViewScreenState extends State<OpencodeWebViewScreen> {
     }
   }
 
+  // ---- Actions ----
+
   Future<void> _handleRefreshPairUrl() async {
     final service = OpencodeService();
     try {
@@ -77,7 +84,7 @@ class _OpencodeWebViewScreenState extends State<OpencodeWebViewScreen> {
       if (mounted) {
         ScaffoldMessenger.of(context).showSnackBar(
           const SnackBar(
-            content: Text('已重新获取配对 Token 并刷新页面'),
+            content: Text('已重新获取配对 Token 并刷新当前页面'),
             behavior: SnackBarBehavior.floating,
           ),
         );
@@ -95,14 +102,85 @@ class _OpencodeWebViewScreenState extends State<OpencodeWebViewScreen> {
     }
   }
 
-  Future<void> _openExternalBrowser() async {
-    final urlStr = OpencodeService().localUrl;
-    if (urlStr != null) {
-      final uri = Uri.parse(urlStr);
+  /// In external browser, we MUST re-pair a fresh token,
+  /// otherwise Opencode rejects the used token with an error.
+  Future<void> _openInExternalBrowser() async {
+    final service = OpencodeService();
+    if (!mounted) return;
+
+    ScaffoldMessenger.of(context).showSnackBar(
+      const SnackBar(
+        content: Row(
+          children: [
+            SizedBox(
+              width: 16,
+              height: 16,
+              child: CircularProgressIndicator(strokeWidth: 2, color: Colors.white),
+            ),
+            SizedBox(width: 12),
+            Expanded(child: Text('正在生成新的配对链接并在外部浏览器打开...')),
+          ],
+        ),
+        duration: Duration(seconds: 3),
+        behavior: SnackBarBehavior.floating,
+      ),
+    );
+
+    try {
+      // Generate a fresh unconsumed pair link from remote server
+      final freshUrl = await service.refreshPairUrl();
+      final uri = Uri.parse(freshUrl);
       if (await canLaunchUrl(uri)) {
         await launchUrl(uri, mode: LaunchMode.externalApplication);
+      } else {
+        throw Exception('无法调起系统外部浏览器');
       }
+    } catch (e) {
+      if (!mounted) return;
+      ScaffoldMessenger.of(context).showSnackBar(
+        SnackBar(
+          content: Text('获取新配对链接并在浏览器打开失败: $e'),
+          backgroundColor: AppTheme.error,
+          behavior: SnackBarBehavior.floating,
+        ),
+      );
     }
+  }
+
+  Future<void> _disconnectAndExit() async {
+    await OpencodeService().disconnect();
+    if (!mounted) return;
+    setState(() {
+      _canPop = true;
+    });
+    Navigator.of(context).pop();
+  }
+
+  Future<bool> _confirmDisconnectDialog() async {
+    final result = await showDialog<bool>(
+      context: context,
+      builder: (ctx) => AlertDialog(
+        backgroundColor: AppTheme.surface,
+        title: const Text('断开连接', style: TextStyle(color: AppTheme.textPrimary)),
+        content: const Text(
+          '确定要断开与 Opencode 的远程会话并退出吗？',
+          style: TextStyle(color: AppTheme.textSecondary),
+        ),
+        actions: [
+          TextButton(
+            onPressed: () => Navigator.pop(ctx, false),
+            child: const Text('取消'),
+          ),
+          ElevatedButton(
+            style: ElevatedButton.styleFrom(backgroundColor: AppTheme.error),
+            onPressed: () => Navigator.pop(ctx, true),
+            child: const Text('断开并退出'),
+          ),
+        ],
+      ),
+    );
+
+    return result ?? false;
   }
 
   void _showLogsSheet(BuildContext context) {
@@ -204,285 +282,423 @@ class _OpencodeWebViewScreenState extends State<OpencodeWebViewScreen> {
     );
   }
 
-  Future<bool> _confirmDisconnect() async {
-    final result = await showDialog<bool>(
+  void _showControlSheet(BuildContext context) {
+    final service = OpencodeService();
+    final host = service.currentHost;
+
+    showModalBottomSheet(
       context: context,
-      builder: (ctx) => AlertDialog(
-        backgroundColor: AppTheme.surface,
-        title: const Text('断开连接', style: TextStyle(color: AppTheme.textPrimary)),
-        content: const Text(
-          '确定要断开与 Opencode 的远程会话吗？',
-          style: TextStyle(color: AppTheme.textSecondary),
+      backgroundColor: AppTheme.surface,
+      isScrollControlled: true,
+      shape: const RoundedRectangleBorder(
+        borderRadius: BorderRadius.vertical(top: Radius.circular(20)),
+      ),
+      builder: (sheetCtx) => SafeArea(
+        child: Padding(
+          padding: const EdgeInsets.fromLTRB(20, 16, 20, 20),
+          child: Column(
+            mainAxisSize: MainAxisSize.min,
+            crossAxisAlignment: CrossAxisAlignment.start,
+            children: [
+              Center(
+                child: Container(
+                  width: 36,
+                  height: 4,
+                  decoration: BoxDecoration(
+                    color: AppTheme.border,
+                    borderRadius: BorderRadius.circular(2),
+                  ),
+                ),
+              ),
+              const SizedBox(height: 16),
+              // Session Status Header
+              Row(
+                children: [
+                  Container(
+                    width: 10,
+                    height: 10,
+                    decoration: const BoxDecoration(
+                      color: AppTheme.accent,
+                      shape: BoxShape.circle,
+                    ),
+                  ),
+                  const SizedBox(width: 10),
+                  Expanded(
+                    child: Column(
+                      crossAxisAlignment: CrossAxisAlignment.start,
+                      children: [
+                        Text(
+                          host?.name ?? 'Opencode 远程会话',
+                          style: const TextStyle(
+                            color: AppTheme.textPrimary,
+                            fontSize: 16,
+                            fontWeight: FontWeight.bold,
+                          ),
+                        ),
+                        if (service.localPort != null)
+                          Text(
+                            '本地 127.0.0.1:${service.localPort} ➔ 远程:${service.remotePort}',
+                            style: const TextStyle(
+                              color: AppTheme.textSecondary,
+                              fontSize: 12,
+                              fontFamily: 'monospace',
+                            ),
+                          ),
+                      ],
+                    ),
+                  ),
+                  IconButton(
+                    icon: const Icon(Icons.close),
+                    onPressed: () => Navigator.pop(sheetCtx),
+                  ),
+                ],
+              ),
+              const SizedBox(height: 16),
+              const Divider(color: AppTheme.border, height: 1),
+              const SizedBox(height: 12),
+
+              // Action List
+              ListTile(
+                dense: true,
+                leading: Container(
+                  padding: const EdgeInsets.all(8),
+                  decoration: BoxDecoration(
+                    color: AppTheme.primary.withOpacity(0.15),
+                    borderRadius: BorderRadius.circular(8),
+                  ),
+                  child: const Icon(Icons.open_in_browser, color: AppTheme.primary, size: 20),
+                ),
+                title: const Text('在外部浏览器打开', style: TextStyle(color: AppTheme.textPrimary, fontWeight: FontWeight.w600)),
+                subtitle: const Text('自动重新生成可用新配对链接并在外部浏览器开启', style: TextStyle(color: AppTheme.textSecondary, fontSize: 11)),
+                onTap: () {
+                  Navigator.pop(sheetCtx);
+                  _openInExternalBrowser();
+                },
+              ),
+              ListTile(
+                dense: true,
+                leading: Container(
+                  padding: const EdgeInsets.all(8),
+                  decoration: BoxDecoration(
+                    color: AppTheme.primary.withOpacity(0.15),
+                    borderRadius: BorderRadius.circular(8),
+                  ),
+                  child: const Icon(Icons.refresh, color: AppTheme.primary, size: 20),
+                ),
+                title: const Text('刷新 WebView 页面', style: TextStyle(color: AppTheme.textPrimary, fontWeight: FontWeight.w600)),
+                onTap: () {
+                  Navigator.pop(sheetCtx);
+                  _controller.reload();
+                },
+              ),
+              ListTile(
+                dense: true,
+                leading: Container(
+                  padding: const EdgeInsets.all(8),
+                  decoration: BoxDecoration(
+                    color: Colors.amber.withOpacity(0.15),
+                    borderRadius: BorderRadius.circular(8),
+                  ),
+                  child: const Icon(Icons.key, color: Colors.amber, size: 20),
+                ),
+                title: const Text('重新获取配对 Token', style: TextStyle(color: AppTheme.textPrimary, fontWeight: FontWeight.w600)),
+                subtitle: const Text('若页面提示 Token 过期或失效可点击重新配对', style: TextStyle(color: AppTheme.textSecondary, fontSize: 11)),
+                onTap: () {
+                  Navigator.pop(sheetCtx);
+                  _handleRefreshPairUrl();
+                },
+              ),
+              ListTile(
+                dense: true,
+                leading: Container(
+                  padding: const EdgeInsets.all(8),
+                  decoration: BoxDecoration(
+                    color: AppTheme.primary.withOpacity(0.15),
+                    borderRadius: BorderRadius.circular(8),
+                  ),
+                  child: const Icon(Icons.list_alt, color: AppTheme.primary, size: 20),
+                ),
+                title: const Text('查看运行日志', style: TextStyle(color: AppTheme.textPrimary, fontWeight: FontWeight.w600)),
+                onTap: () {
+                  Navigator.pop(sheetCtx);
+                  _showLogsSheet(context);
+                },
+              ),
+              ListTile(
+                dense: true,
+                leading: Container(
+                  padding: const EdgeInsets.all(8),
+                  decoration: BoxDecoration(
+                    color: AppTheme.border.withOpacity(0.5),
+                    borderRadius: BorderRadius.circular(8),
+                  ),
+                  child: const Icon(Icons.restart_alt, color: AppTheme.textPrimary, size: 20),
+                ),
+                title: const Text('重启远程服务', style: TextStyle(color: AppTheme.textPrimary, fontWeight: FontWeight.w600)),
+                subtitle: const Text('执行 opencode service restart 并更新链接', style: TextStyle(color: AppTheme.textSecondary, fontSize: 11)),
+                onTap: () async {
+                  Navigator.pop(sheetCtx);
+                  try {
+                    await service.controlService('restart');
+                    await _handleRefreshPairUrl();
+                  } catch (e) {
+                    if (!mounted) return;
+                    ScaffoldMessenger.of(context).showSnackBar(
+                      SnackBar(content: Text('重启服务失败: $e'), backgroundColor: AppTheme.error),
+                    );
+                  }
+                },
+              ),
+              ListTile(
+                dense: true,
+                leading: Container(
+                  padding: const EdgeInsets.all(8),
+                  decoration: BoxDecoration(
+                    color: AppTheme.primary.withOpacity(0.15),
+                    borderRadius: BorderRadius.circular(8),
+                  ),
+                  child: Icon(
+                    _isFullScreen ? Icons.fullscreen_exit : Icons.fullscreen,
+                    color: AppTheme.primary,
+                    size: 20,
+                  ),
+                ),
+                title: Text(
+                  _isFullScreen ? '退出全屏 (显示顶部栏)' : '切换至全屏模式 (隐藏顶部栏)',
+                  style: const TextStyle(color: AppTheme.textPrimary, fontWeight: FontWeight.w600),
+                ),
+                onTap: () {
+                  Navigator.pop(sheetCtx);
+                  setState(() => _isFullScreen = !_isFullScreen);
+                },
+              ),
+              const SizedBox(height: 12),
+              // Disconnect button
+              SizedBox(
+                width: double.infinity,
+                child: ElevatedButton.icon(
+                  style: ElevatedButton.styleFrom(
+                    backgroundColor: AppTheme.error,
+                    padding: const EdgeInsets.symmetric(vertical: 14),
+                  ),
+                  icon: const Icon(Icons.power_settings_new, size: 20),
+                  label: const Text('断开并退出'),
+                  onPressed: () async {
+                    Navigator.pop(sheetCtx);
+                    final shouldExit = await _confirmDisconnectDialog();
+                    if (shouldExit && mounted) {
+                      await _disconnectAndExit();
+                    }
+                  },
+                ),
+              ),
+            ],
+          ),
         ),
-        actions: [
-          TextButton(
-            onPressed: () => Navigator.pop(ctx, false),
-            child: const Text('取消'),
-          ),
-          ElevatedButton(
-            style: ElevatedButton.styleFrom(backgroundColor: AppTheme.error),
-            onPressed: () => Navigator.pop(ctx, true),
-            child: const Text('断开并退出'),
-          ),
-        ],
       ),
     );
-
-    if (result == true) {
-      await OpencodeService().disconnect();
-      return true;
-    }
-    return false;
   }
 
   @override
   Widget build(BuildContext context) {
     final service = OpencodeService();
     final host = service.currentHost;
+    final screenSize = MediaQuery.of(context).size;
+
+    // Default floating control position at bottom right
+    _fabPosition ??= Offset(screenSize.width - 64, screenSize.height - 130);
 
     return PopScope(
-      canPop: false,
+      canPop: _canPop,
       onPopInvokedWithResult: (didPop, result) async {
         if (didPop) return;
         if (await _controller.canGoBack()) {
           await _controller.goBack();
         } else {
-          final shouldExit = await _confirmDisconnect();
+          final shouldExit = await _confirmDisconnectDialog();
           if (shouldExit && mounted) {
-            Navigator.of(context).pop();
+            await _disconnectAndExit();
           }
         }
       },
       child: Scaffold(
-        appBar: AppBar(
-          leading: IconButton(
-            icon: const Icon(Icons.arrow_back),
-            tooltip: '返回/断开',
-            onPressed: () async {
-              final shouldExit = await _confirmDisconnect();
-              if (shouldExit && mounted) {
-                Navigator.of(context).pop();
-              }
-            },
-          ),
-          title: Column(
-            crossAxisAlignment: CrossAxisAlignment.start,
-            children: [
-              Row(
-                children: [
-                  Container(
-                    width: 8,
-                    height: 8,
-                    decoration: const BoxDecoration(
-                      color: AppTheme.accent,
-                      shape: BoxShape.circle,
+        appBar: _isFullScreen
+            ? null
+            : AppBar(
+                leading: IconButton(
+                  icon: const Icon(Icons.arrow_back),
+                  tooltip: '断开并退出',
+                  onPressed: () async {
+                    final shouldExit = await _confirmDisconnectDialog();
+                    if (shouldExit && mounted) {
+                      await _disconnectAndExit();
+                    }
+                  },
+                ),
+                title: Column(
+                  crossAxisAlignment: CrossAxisAlignment.start,
+                  children: [
+                    Row(
+                      children: [
+                        Container(
+                          width: 8,
+                          height: 8,
+                          decoration: const BoxDecoration(
+                            color: AppTheme.accent,
+                            shape: BoxShape.circle,
+                          ),
+                        ),
+                        const SizedBox(width: 8),
+                        Text(
+                          host?.name ?? 'Opencode',
+                          style: const TextStyle(fontSize: 16, fontWeight: FontWeight.w600),
+                        ),
+                      ],
                     ),
+                    if (service.localPort != null)
+                      Text(
+                        '127.0.0.1:${service.localPort} ➔ 远程:${service.remotePort}',
+                        style: const TextStyle(
+                          fontSize: 11,
+                          color: AppTheme.textSecondary,
+                          fontFamily: 'monospace',
+                        ),
+                      ),
+                  ],
+                ),
+                actions: [
+                  IconButton(
+                    icon: const Icon(Icons.fullscreen, size: 22),
+                    tooltip: '全屏模式',
+                    onPressed: () => setState(() => _isFullScreen = true),
                   ),
-                  const SizedBox(width: 8),
-                  Text(
-                    host?.name ?? 'Opencode',
-                    style: const TextStyle(fontSize: 16, fontWeight: FontWeight.w600),
+                  IconButton(
+                    icon: const Icon(Icons.tune, size: 20),
+                    tooltip: '快捷控制菜单',
+                    onPressed: () => _showControlSheet(context),
                   ),
                 ],
               ),
-              if (service.localPort != null)
-                Text(
-                  '127.0.0.1:${service.localPort} ➔ 远程:${service.remotePort}',
-                  style: const TextStyle(
-                    fontSize: 11,
-                    color: AppTheme.textSecondary,
-                    fontFamily: 'monospace',
-                  ),
-                ),
-            ],
-          ),
-          actions: [
-            IconButton(
-              icon: const Icon(Icons.refresh, size: 20),
-              tooltip: '刷新页面',
-              onPressed: () => _controller.reload(),
-            ),
-            IconButton(
-              icon: const Icon(Icons.key, size: 20),
-              tooltip: '重新获取配对 Token',
-              onPressed: _handleRefreshPairUrl,
-            ),
-            PopupMenuButton<String>(
-              icon: const Icon(Icons.more_vert),
-              color: AppTheme.surface,
-              onSelected: (val) async {
-                switch (val) {
-                  case 'external':
-                    _openExternalBrowser();
-                    break;
-                  case 'logs':
-                    _showLogsSheet(context);
-                    break;
-                  case 'restart_service':
-                    try {
-                      await service.controlService('restart');
-                      await _handleRefreshPairUrl();
-                    } catch (e) {
-                      if (!mounted) return;
-                      ScaffoldMessenger.of(context).showSnackBar(
-                        SnackBar(
-                          content: Text('重启失败: $e'),
-                          backgroundColor: AppTheme.error,
-                          behavior: SnackBarBehavior.floating,
-                        ),
-                      );
-                    }
-                    break;
-                  case 'stop_service':
-                    try {
-                      await service.controlService('stop');
-                      if (!mounted) return;
-                      ScaffoldMessenger.of(context).showSnackBar(
-                        const SnackBar(
-                          content: Text('已停止远程 Opencode 服务'),
-                          behavior: SnackBarBehavior.floating,
-                        ),
-                      );
-                    } catch (e) {
-                      if (!mounted) return;
-                      ScaffoldMessenger.of(context).showSnackBar(
-                        SnackBar(
-                          content: Text('停止服务失败: $e'),
-                          backgroundColor: AppTheme.error,
-                          behavior: SnackBarBehavior.floating,
-                        ),
-                      );
-                    }
-                    break;
-                  case 'disconnect':
-                    final exit = await _confirmDisconnect();
-                    if (exit && mounted) {
-                      Navigator.of(context).pop();
-                    }
-                    break;
-                }
-              },
-              itemBuilder: (ctx) => [
-                const PopupMenuItem(
-                  value: 'external',
-                  child: Row(
-                    children: [
-                      Icon(Icons.open_in_browser, size: 18),
-                      SizedBox(width: 8),
-                      Text('在外部浏览器中打开'),
-                    ],
-                  ),
-                ),
-                const PopupMenuItem(
-                  value: 'logs',
-                  child: Row(
-                    children: [
-                      Icon(Icons.list_alt, size: 18),
-                      SizedBox(width: 8),
-                      Text('查看运行日志'),
-                    ],
-                  ),
-                ),
-                const PopupMenuDivider(),
-                const PopupMenuItem(
-                  value: 'restart_service',
-                  child: Row(
-                    children: [
-                      Icon(Icons.restart_alt, size: 18),
-                      SizedBox(width: 8),
-                      Text('重启远程服务'),
-                    ],
-                  ),
-                ),
-                const PopupMenuItem(
-                  value: 'stop_service',
-                  child: Row(
-                    children: [
-                      Icon(Icons.stop_circle_outlined, size: 18),
-                      SizedBox(width: 8),
-                      Text('停止远程服务'),
-                    ],
-                  ),
-                ),
-                const PopupMenuDivider(),
-                const PopupMenuItem(
-                  value: 'disconnect',
-                  child: Row(
-                    children: [
-                      Icon(Icons.power_settings_new, size: 18, color: AppTheme.error),
-                      SizedBox(width: 8),
-                      Text('断开连接', style: TextStyle(color: AppTheme.error)),
-                    ],
-                  ),
-                ),
-              ],
-            ),
-          ],
-        ),
-        body: Stack(
-          children: [
-            if (_loadError != null)
-              Center(
-                child: Padding(
-                  padding: const EdgeInsets.all(24),
-                  child: Column(
-                    mainAxisAlignment: MainAxisAlignment.center,
-                    children: [
-                      const Icon(Icons.cloud_off, size: 64, color: AppTheme.textSecondary),
-                      const SizedBox(height: 16),
-                      const Text(
-                        '网页加载遇到问题',
-                        style: TextStyle(
-                          color: AppTheme.textPrimary,
-                          fontSize: 16,
-                          fontWeight: FontWeight.w600,
-                        ),
-                      ),
-                      const SizedBox(height: 8),
-                      Text(
-                        _loadError!,
-                        textAlign: TextAlign.center,
-                        style: const TextStyle(color: AppTheme.textSecondary, fontSize: 13),
-                      ),
-                      const SizedBox(height: 24),
-                      Row(
-                        mainAxisAlignment: MainAxisAlignment.center,
-                        children: [
-                          OutlinedButton.icon(
-                            icon: const Icon(Icons.refresh, size: 18),
-                            label: const Text('重试加载'),
-                            onPressed: () {
-                              setState(() => _loadError = null);
-                              _controller.reload();
-                            },
+        body: SafeArea(
+          top: !_isFullScreen,
+          bottom: false,
+          child: Stack(
+            children: [
+              // 1. Fullscreen WebView
+              if (_loadError != null)
+                Center(
+                  child: Padding(
+                    padding: const EdgeInsets.all(24),
+                    child: Column(
+                      mainAxisAlignment: MainAxisAlignment.center,
+                      children: [
+                        const Icon(Icons.cloud_off, size: 64, color: AppTheme.textSecondary),
+                        const SizedBox(height: 16),
+                        const Text(
+                          '网页加载遇到问题',
+                          style: TextStyle(
+                            color: AppTheme.textPrimary,
+                            fontSize: 16,
+                            fontWeight: FontWeight.w600,
                           ),
-                          const SizedBox(width: 12),
-                          ElevatedButton.icon(
-                            icon: const Icon(Icons.key, size: 18),
-                            label: const Text('重新配对 Token'),
-                            onPressed: _handleRefreshPairUrl,
-                          ),
-                        ],
-                      ),
-                    ],
+                        ),
+                        const SizedBox(height: 8),
+                        Text(
+                          _loadError!,
+                          textAlign: TextAlign.center,
+                          style: const TextStyle(color: AppTheme.textSecondary, fontSize: 13),
+                        ),
+                        const SizedBox(height: 24),
+                        Row(
+                          mainAxisAlignment: MainAxisAlignment.center,
+                          children: [
+                            OutlinedButton.icon(
+                              icon: const Icon(Icons.refresh, size: 18),
+                              label: const Text('重试加载'),
+                              onPressed: () {
+                                setState(() => _loadError = null);
+                                _controller.reload();
+                              },
+                            ),
+                            const SizedBox(width: 12),
+                            ElevatedButton.icon(
+                              icon: const Icon(Icons.key, size: 18),
+                              label: const Text('重新配对 Token'),
+                              onPressed: _handleRefreshPairUrl,
+                            ),
+                          ],
+                        ),
+                      ],
+                    ),
+                  ),
+                )
+              else
+                SizedBox.expand(
+                  child: WebViewWidget(controller: _controller),
+                ),
+
+              // 2. Loading Progress Indicator
+              if (_isLoading)
+                Positioned(
+                  top: 0,
+                  left: 0,
+                  right: 0,
+                  child: LinearProgressIndicator(
+                    value: _loadingProgress / 100.0,
+                    backgroundColor: Colors.transparent,
+                    valueColor: const AlwaysStoppedAnimation<Color>(AppTheme.primary),
+                    minHeight: 2.5,
                   ),
                 ),
-              )
-            else
-              WebViewWidget(controller: _controller),
-            if (_isLoading)
+
+              // 3. Floating Draggable Control Pill/Ball (Always accessible, especially in Full Screen)
               Positioned(
-                top: 0,
-                left: 0,
-                right: 0,
-                child: LinearProgressIndicator(
-                  value: _loadingProgress / 100.0,
-                  backgroundColor: Colors.transparent,
-                  valueColor: const AlwaysStoppedAnimation<Color>(AppTheme.primary),
-                  minHeight: 2.5,
+                left: (_fabPosition!.dx).clamp(10.0, screenSize.width - 58.0),
+                top: (_fabPosition!.dy).clamp(30.0, screenSize.height - 70.0),
+                child: GestureDetector(
+                  onPanUpdate: (details) {
+                    setState(() {
+                      _fabPosition = Offset(
+                        _fabPosition!.dx + details.delta.dx,
+                        _fabPosition!.dy + details.delta.dy,
+                      );
+                    });
+                  },
+                  child: Material(
+                    elevation: 6,
+                    color: AppTheme.surface.withOpacity(0.9),
+                    borderRadius: BorderRadius.circular(24),
+                    child: InkWell(
+                      borderRadius: BorderRadius.circular(24),
+                      onTap: () => _showControlSheet(context),
+                      child: Container(
+                        padding: const EdgeInsets.symmetric(horizontal: 10, vertical: 8),
+                        decoration: BoxDecoration(
+                          borderRadius: BorderRadius.circular(24),
+                          border: Border.all(color: AppTheme.primary.withOpacity(0.6), width: 1.2),
+                        ),
+                        child: Row(
+                          mainAxisSize: MainAxisSize.min,
+                          children: [
+                            Container(
+                              width: 8,
+                              height: 8,
+                              decoration: const BoxDecoration(
+                                color: AppTheme.accent,
+                                shape: BoxShape.circle,
+                              ),
+                            ),
+                            const SizedBox(width: 6),
+                            const Icon(Icons.tune, color: AppTheme.textPrimary, size: 18),
+                          ],
+                        ),
+                      ),
+                    ),
+                  ),
                 ),
               ),
-          ],
+            ],
+          ),
         ),
       ),
     );
