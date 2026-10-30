@@ -34,7 +34,12 @@ pub async fn create_ssh_client(
     config: &SshConnectConfig,
 ) -> Result<client::Handle<SshClientHandler>, String> {
     let ssh_config = Arc::new(Config {
-        inactivity_timeout: Some(std::time::Duration::from_secs(60)),
+        // Do NOT disconnect on idle: Opencode sessions remain active indefinitely
+        inactivity_timeout: None,
+        // Send keepalive ping every 15s to keep NAT and cellular firewalls alive
+        keepalive_interval: Some(std::time::Duration::from_secs(15)),
+        keepalive_max: 4,
+        nodelay: true,
         ..Config::default()
     });
 

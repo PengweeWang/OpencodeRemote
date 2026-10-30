@@ -383,24 +383,42 @@ pub async fn start_opencode_session(
         remote_port: Some(remote_port),
     });
 
-    // 7. Background forwarding loop
+    // 7. Background forwarding loop with keepalive health check
     let s_id = session_id.clone();
     let client_for_loop = client.clone();
     tokio::spawn(async move {
+        let mut health_interval = tokio::time::interval(std::time::Duration::from_secs(10));
+        health_interval.set_missed_tick_behavior(tokio::time::MissedTickBehavior::Skip);
+
         loop {
             tokio::select! {
                 _ = stop_rx.recv() => {
                     break;
                 }
+                _ = health_interval.tick() => {
+                    // Actively monitor if the underlying SSH connection was dropped
+                    let is_closed = {
+                        let cl = client_for_loop.lock().await;
+                        cl.is_closed()
+                    };
+                    if is_closed {
+                        eprintln!("[OpencodeRemote] SSH connection has closed, terminating forwarding loop.");
+                        break;
+                    }
+                }
                 accept_res = listener.accept() => {
                     match accept_res {
                         Ok((mut tcp_stream, _peer_addr)) => {
+                            // Ensure low-latency TCP forwarding for web assets & websockets
+                            let _ = tcp_stream.set_nodelay(true);
+
                             let cl = client_for_loop.clone();
                             let rem_p = remote_port as u32;
                             let loc_p = local_port as u32;
 
                             tokio::spawn(async move {
-                                let ch_res = {
+                                let open_timeout = std::time::Duration::from_secs(10);
+                                let open_future = async {
                                     let client_guard = cl.lock().await;
                                     client_guard
                                         .channel_open_direct_tcpip(
@@ -412,17 +430,30 @@ pub async fn start_opencode_session(
                                         .await
                                 };
 
-                                if let Ok(ch) = ch_res {
-                                    let mut ssh_stream = ch.into_stream();
-                                    let _ = tokio::io::copy_bidirectional(
-                                        &mut tcp_stream,
-                                        &mut ssh_stream,
-                                    )
-                                    .await;
+                                match tokio::time::timeout(open_timeout, open_future).await {
+                                    Ok(Ok(ch)) => {
+                                        let mut ssh_stream = ch.into_stream();
+                                        let _ = tokio::io::copy_bidirectional(
+                                            &mut tcp_stream,
+                                            &mut ssh_stream,
+                                        )
+                                        .await;
+                                    }
+                                    Ok(Err(e)) => {
+                                        eprintln!("[OpencodeRemote] Direct-tcpip channel open failed: {}", e);
+                                    }
+                                    Err(_) => {
+                                        eprintln!("[OpencodeRemote] Direct-tcpip channel open timed out after 10s");
+                                    }
                                 }
                             });
                         }
-                        Err(_) => break,
+                        Err(e) => {
+                            // Do NOT break on transient socket errors (e.g. aborted handshake, EMFILE)
+                            eprintln!("[OpencodeRemote] Transient listener accept error: {}", e);
+                            tokio::time::sleep(std::time::Duration::from_millis(100)).await;
+                            continue;
+                        }
                     }
                 }
             }

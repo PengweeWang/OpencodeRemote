@@ -25,6 +25,7 @@ class _OpencodeWebViewScreenState extends State<OpencodeWebViewScreen> {
   @override
   void initState() {
     super.initState();
+    OpencodeService().addListener(_onServiceStateChanged);
     final service = OpencodeService();
     final initialUrl = service.localUrl ?? '';
 
@@ -71,6 +72,47 @@ class _OpencodeWebViewScreenState extends State<OpencodeWebViewScreen> {
 
     if (initialUrl.isNotEmpty) {
       _controller.loadRequest(Uri.parse(initialUrl));
+    }
+  }
+
+  @override
+  void dispose() {
+    OpencodeService().removeListener(_onServiceStateChanged);
+    super.dispose();
+  }
+
+  void _onServiceStateChanged() {
+    if (mounted) {
+      setState(() {});
+    }
+  }
+
+  Future<void> _handleReconnect() async {
+    final service = OpencodeService();
+    final host = service.currentHost;
+    if (host == null) return;
+
+    ScaffoldMessenger.of(context).showSnackBar(
+      const SnackBar(
+        content: Row(
+          children: [
+            SizedBox(
+              width: 16,
+              height: 16,
+              child: CircularProgressIndicator(strokeWidth: 2, color: Colors.white),
+            ),
+            SizedBox(width: 12),
+            Expanded(child: Text('正在重新建立远程 SSH 连接与端口转发...')),
+          ],
+        ),
+        duration: Duration(seconds: 4),
+        behavior: SnackBarBehavior.floating,
+      ),
+    );
+
+    await service.connect(host);
+    if (service.state == OpencodeState.ready && service.localUrl != null) {
+      _controller.loadRequest(Uri.parse(service.localUrl!));
     }
   }
 
@@ -292,6 +334,9 @@ class _OpencodeWebViewScreenState extends State<OpencodeWebViewScreen> {
   void _showControlSheet(BuildContext context) {
     final service = OpencodeService();
     final host = service.currentHost;
+    final statusColor = service.isConnected
+        ? AppTheme.accent
+        : (service.isConnecting ? AppTheme.warning : AppTheme.error);
 
     showModalBottomSheet(
       context: context,
@@ -324,8 +369,8 @@ class _OpencodeWebViewScreenState extends State<OpencodeWebViewScreen> {
                   Container(
                     width: 10,
                     height: 10,
-                    decoration: const BoxDecoration(
-                      color: AppTheme.accent,
+                    decoration: BoxDecoration(
+                      color: statusColor,
                       shape: BoxShape.circle,
                     ),
                   ),
@@ -365,6 +410,24 @@ class _OpencodeWebViewScreenState extends State<OpencodeWebViewScreen> {
               const SizedBox(height: 12),
 
               // Action List
+              if (!service.isConnected)
+                ListTile(
+                  dense: true,
+                  leading: Container(
+                    padding: const EdgeInsets.all(8),
+                    decoration: BoxDecoration(
+                      color: AppTheme.accent.withOpacity(0.15),
+                      borderRadius: BorderRadius.circular(8),
+                    ),
+                    child: const Icon(Icons.link, color: AppTheme.accent, size: 20),
+                  ),
+                  title: const Text('重新连接远程服务', style: TextStyle(color: AppTheme.accent, fontWeight: FontWeight.bold)),
+                  subtitle: const Text('远程连接已断开，点击重新建立连接与端口转发', style: TextStyle(color: AppTheme.textSecondary, fontSize: 11)),
+                  onTap: () {
+                    Navigator.pop(sheetCtx);
+                    _handleReconnect();
+                  },
+                ),
               ListTile(
                 dense: true,
                 leading: Container(
@@ -505,6 +568,9 @@ class _OpencodeWebViewScreenState extends State<OpencodeWebViewScreen> {
     final service = OpencodeService();
     final host = service.currentHost;
     final screenSize = MediaQuery.of(context).size;
+    final statusColor = service.isConnected
+        ? AppTheme.accent
+        : (service.isConnecting ? AppTheme.warning : AppTheme.error);
 
     // Default floating control position at bottom right
     _fabPosition ??= Offset(screenSize.width - 64, screenSize.height - 130);
@@ -544,8 +610,8 @@ class _OpencodeWebViewScreenState extends State<OpencodeWebViewScreen> {
                         Container(
                           width: 8,
                           height: 8,
-                          decoration: const BoxDecoration(
-                            color: AppTheme.accent,
+                          decoration: BoxDecoration(
+                            color: statusColor,
                             shape: BoxShape.circle,
                           ),
                         ),
@@ -684,8 +750,8 @@ class _OpencodeWebViewScreenState extends State<OpencodeWebViewScreen> {
                             Container(
                               width: 8,
                               height: 8,
-                              decoration: const BoxDecoration(
-                                color: AppTheme.accent,
+                              decoration: BoxDecoration(
+                                color: statusColor,
                                 shape: BoxShape.circle,
                               ),
                             ),
@@ -698,6 +764,62 @@ class _OpencodeWebViewScreenState extends State<OpencodeWebViewScreen> {
                   ),
                 ),
               ),
+
+              // 4. Floating warning banner when connection is lost
+              if (!service.isConnected && !service.isConnecting)
+                Positioned(
+                  top: 12,
+                  left: 16,
+                  right: 16,
+                  child: Material(
+                    elevation: 8,
+                    borderRadius: BorderRadius.circular(12),
+                    color: AppTheme.surface.withOpacity(0.96),
+                    child: Container(
+                      padding: const EdgeInsets.symmetric(horizontal: 14, vertical: 10),
+                      decoration: BoxDecoration(
+                        borderRadius: BorderRadius.circular(12),
+                        border: Border.all(color: AppTheme.error.withOpacity(0.5)),
+                      ),
+                      child: Row(
+                        children: [
+                          const Icon(Icons.cloud_off, color: AppTheme.error, size: 22),
+                          const SizedBox(width: 10),
+                          const Expanded(
+                            child: Column(
+                              crossAxisAlignment: CrossAxisAlignment.start,
+                              mainAxisSize: MainAxisSize.min,
+                              children: [
+                                Text(
+                                  '远程连接已断开',
+                                  style: TextStyle(
+                                    color: AppTheme.textPrimary,
+                                    fontSize: 13,
+                                    fontWeight: FontWeight.bold,
+                                  ),
+                                ),
+                                Text(
+                                  '网络波动或远端服务重置',
+                                  style: TextStyle(color: AppTheme.textSecondary, fontSize: 11),
+                                ),
+                              ],
+                            ),
+                          ),
+                          ElevatedButton(
+                            style: ElevatedButton.styleFrom(
+                              backgroundColor: AppTheme.primary,
+                              padding: const EdgeInsets.symmetric(horizontal: 12, vertical: 6),
+                              minimumSize: Size.zero,
+                              tapTargetSize: MaterialTapTargetSize.shrinkWrap,
+                            ),
+                            onPressed: _handleReconnect,
+                            child: const Text('重新连接', style: TextStyle(fontSize: 12)),
+                          ),
+                        ],
+                      ),
+                    ),
+                  ),
+                ),
             ],
           ),
         ),

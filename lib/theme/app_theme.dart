@@ -4,6 +4,7 @@ class AppTheme {
   static const Color primary = Color(0xFF6366F1); // Indigo
   static const Color primaryDark = Color(0xFF4F46E5);
   static const Color accent = Color(0xFF10B981); // Emerald green for connected
+  static const Color warning = Color(0xFFF59E0B); // Amber 500
   static const Color background = Color(0xFF0F172A); // Slate 900
   static const Color surface = Color(0xFF1E293B); // Slate 800
   static const Color cardColor = Color(0xFF1E293B);

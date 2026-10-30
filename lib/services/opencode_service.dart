@@ -4,6 +4,7 @@ import '../models/ssh_host.dart';
 import '../src/rust/api/simple.dart' as rust_api;
 import '../src/rust/opencode.dart';
 import '../src/rust/ssh.dart';
+import 'keepalive_service.dart';
 import 'storage_service.dart';
 
 enum OpencodeState {
@@ -197,15 +198,24 @@ class OpencodeService extends ChangeNotifier {
         _localPort = event.localPort;
         _remotePort = event.remotePort;
         _addLog(event.step, event.message);
+        // Start foreground service keepalive
+        KeepAliveService().syncState(
+          isConnected: true,
+          hostName: _currentHost?.name,
+          localPort: _localPort,
+          remotePort: _remotePort,
+        );
         break;
       case 'error':
         _state = OpencodeState.error;
         _errorMessage = event.message;
         _addLog(event.step, event.message, isError: true);
+        KeepAliveService().syncState(isConnected: false);
         break;
       case 'closed':
         _state = OpencodeState.disconnected;
         _addLog(event.step, event.message);
+        KeepAliveService().syncState(isConnected: false);
         break;
       default:
         _addLog(event.step, event.message);
@@ -219,6 +229,7 @@ class OpencodeService extends ChangeNotifier {
     _currentSessionId = null;
     _state = OpencodeState.disconnected;
     _addLog('disconnect', 'Disconnected by user');
+    KeepAliveService().syncState(isConnected: false);
     notifyListeners();
 
     if (sId != null) {

@@ -1,5 +1,6 @@
 import 'package:flutter/material.dart';
 import '../models/ssh_host.dart';
+import '../services/keepalive_service.dart';
 import '../services/opencode_service.dart';
 import '../services/storage_service.dart';
 import '../theme/app_theme.dart';
@@ -14,7 +15,39 @@ class HomeView extends StatefulWidget {
   State<HomeView> createState() => _HomeViewState();
 }
 
-class _HomeViewState extends State<HomeView> {
+class _HomeViewState extends State<HomeView> with WidgetsBindingObserver {
+  bool _isIgnoringBattery = true;
+  bool _showBatteryNotice = true;
+
+  @override
+  void initState() {
+    super.initState();
+    WidgetsBinding.instance.addObserver(this);
+    _checkBatteryOptimizations();
+  }
+
+  @override
+  void dispose() {
+    WidgetsBinding.instance.removeObserver(this);
+    super.dispose();
+  }
+
+  @override
+  void didChangeAppLifecycleState(AppLifecycleState state) {
+    if (state == AppLifecycleState.resumed) {
+      _checkBatteryOptimizations();
+    }
+  }
+
+  Future<void> _checkBatteryOptimizations() async {
+    final isIgnoring = await KeepAliveService().isIgnoringBatteryOptimizations();
+    if (mounted) {
+      setState(() {
+        _isIgnoringBattery = isIgnoring;
+      });
+    }
+  }
+
   @override
   Widget build(BuildContext context) {
     final storage = StorageService();
@@ -68,6 +101,10 @@ class _HomeViewState extends State<HomeView> {
               : ListView(
                   padding: const EdgeInsets.all(16),
                   children: [
+                    if (!_isIgnoringBattery && _showBatteryNotice) ...[
+                      _buildBatteryNoticeCard(context),
+                      const SizedBox(height: 16),
+                    ],
                     if (lastHost != null) ...[
                       _buildQuickConnectCard(context, lastHost),
                       const SizedBox(height: 20),
@@ -109,13 +146,89 @@ class _HomeViewState extends State<HomeView> {
     );
   }
 
+  Widget _buildBatteryNoticeCard(BuildContext context) {
+    return Container(
+      padding: const EdgeInsets.all(12),
+      decoration: BoxDecoration(
+        color: AppTheme.primary.withOpacity(0.08),
+        borderRadius: BorderRadius.circular(12),
+        border: Border.all(color: AppTheme.primary.withOpacity(0.3)),
+      ),
+      child: Row(
+        crossAxisAlignment: CrossAxisAlignment.start,
+        children: [
+          const Padding(
+            padding: EdgeInsets.only(top: 2),
+            child: Icon(Icons.battery_saver, color: AppTheme.primary, size: 20),
+          ),
+          const SizedBox(width: 10),
+          Expanded(
+            child: Column(
+              crossAxisAlignment: CrossAxisAlignment.start,
+              children: [
+                const Text(
+                  '后台持续保活建议',
+                  style: TextStyle(
+                    color: AppTheme.textPrimary,
+                    fontSize: 13,
+                    fontWeight: FontWeight.bold,
+                  ),
+                ),
+                const SizedBox(height: 4),
+                const Text(
+                  '为避免切换后台或息屏时系统中断 SSH 会话与端口转发，建议允许忽略电池优化。',
+                  style: TextStyle(color: AppTheme.textSecondary, fontSize: 11, height: 1.4),
+                ),
+                const SizedBox(height: 8),
+                Row(
+                  children: [
+                    ElevatedButton(
+                      style: ElevatedButton.styleFrom(
+                        backgroundColor: AppTheme.primary,
+                        padding: const EdgeInsets.symmetric(horizontal: 12, vertical: 6),
+                        minimumSize: Size.zero,
+                        tapTargetSize: MaterialTapTargetSize.shrinkWrap,
+                      ),
+                      onPressed: () => KeepAliveService().requestIgnoreBatteryOptimizations(),
+                      child: const Text('允许忽略优化', style: TextStyle(fontSize: 11)),
+                    ),
+                    const SizedBox(width: 8),
+                    TextButton(
+                      style: TextButton.styleFrom(
+                        padding: const EdgeInsets.symmetric(horizontal: 10, vertical: 6),
+                        minimumSize: Size.zero,
+                        tapTargetSize: MaterialTapTargetSize.shrinkWrap,
+                      ),
+                      onPressed: () => setState(() => _showBatteryNotice = false),
+                      child: const Text('暂不需要', style: TextStyle(color: AppTheme.textSecondary, fontSize: 11)),
+                    ),
+                  ],
+                ),
+              ],
+            ),
+          ),
+          IconButton(
+            icon: const Icon(Icons.close, size: 16, color: AppTheme.textSecondary),
+            padding: EdgeInsets.zero,
+            constraints: const BoxConstraints(),
+            onPressed: () => setState(() => _showBatteryNotice = false),
+          ),
+        ],
+      ),
+    );
+  }
+
   Widget _buildEmptyState(BuildContext context) {
     return Center(
-      child: Padding(
-        padding: const EdgeInsets.symmetric(horizontal: 32),
+      child: SingleChildScrollView(
+        padding: const EdgeInsets.symmetric(horizontal: 32, vertical: 24),
         child: Column(
           mainAxisAlignment: MainAxisAlignment.center,
           children: [
+            if (!_isIgnoringBattery && _showBatteryNotice) ...[
+              _buildBatteryNoticeCard(context),
+              const SizedBox(height: 24),
+            ],
             Container(
               padding: const EdgeInsets.all(24),
               decoration: BoxDecoration(
